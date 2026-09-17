@@ -29,3 +29,12 @@ def row_counts(conn: psycopg.Connection) -> dict[str, int]:
     for t in tables:
         counts[t] = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
     return counts
+
+
+def create_staging(conn: psycopg.Connection) -> None:
+    run_sql_file(conn, "staging.sql")
+
+
+def finalize_staging(conn: psycopg.Connection) -> None:
+    """Collapse *_staging into dimension tables."""
+    run_sql_file(conn, "finalize_staging.sql")
