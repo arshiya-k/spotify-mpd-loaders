@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: mpd-postgres
+    environment:
+      POSTGRES_USER: mpd
+      POSTGRES_PASSWORD: mpd
+      POSTGRES_DB: mpd
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Bulk-load tuning. Defaults are sized for a tiny VM; we have a laptop.
+    command:
+      - "postgres"
+      - "-c" 
+      - "shared_buffers=2GB"          # page cache inside PG (default 128MB)
+      - "-c"
+      - "maintenance_work_mem=1GB"    # memory for CREATE INDEX / ADD CONSTRAINT
+      - "-c"
+      - "work_mem=256MB"              # per-sort/hash memory (used by SELECT DISTINCT)
+      - "-c"
+      - "max_wal_size=4GB"            # fewer checkpoints during heavy writes
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "synchronous_commit=off"      # don't fsync on every commit; fine for a rebuildable load
+
+volumes:
+  pgdata:
