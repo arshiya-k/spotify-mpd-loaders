@@ -7,6 +7,7 @@ would serialize on one core. Processes get real parallelism at the cost of shari
 nothing -- hence staging instead of loader 03's in-memory dedup.
 """
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -44,6 +45,7 @@ def main() -> None:
         db.create_staging(conn)
 
     total = 0
+    t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=WORKERS, initializer=_init_worker) as pool:
         futures = {pool.submit(_load_one, f): f for f in files}
         for i, fut in enumerate(as_completed(futures), 1):
@@ -51,8 +53,12 @@ def main() -> None:
             if i % 50 == 0:
                 print(f"  {i} slices, {total:,} entries")
 
+    t_parallel = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     with db.connect() as conn:
         db.finalize_staging(conn)
+    print(f"  workers={WORKERS}  parallel copy {t_parallel:.1f}s  finalize {time.perf_counter() - t0:.1f}s")
 
 
 if __name__ == "__main__":
