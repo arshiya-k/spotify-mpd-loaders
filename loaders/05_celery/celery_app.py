@@ -49,6 +49,16 @@ def load_slice(path: str) -> int:
     """Same body as loader 04's _load_one. Path is a str because it must be JSON-serializable."""
     rows = parse_slice(Path(path))
     conn = _get_conn()
+
+    # Idempotency guard. With acks_late a task can be redelivered after it finished
+    # (worker died before ack). Each slice commits atomically, so "first pid exists"
+    # means the whole slice landed. Not airtight against two concurrent runs of the
+    # same slice -- that would need a unique index on pid during load.
+    first_pid = rows.playlists[0][0]
+    if conn.execute("SELECT 1 FROM playlists WHERE pid = %s", (first_pid,)).fetchone():
+        conn.rollback()
+        return 0
+
     copy_slice_to_staging(conn, rows)
     conn.commit()
     return len(rows.entries)
