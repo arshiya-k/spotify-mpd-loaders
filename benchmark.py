@@ -12,6 +12,7 @@ The harness does everything else (schema reset, constraints, validation, timing)
 """
 import argparse
 import csv
+import psycopg
 import os
 import subprocess
 import sys
@@ -25,6 +26,12 @@ from common.diskguard import check as check_disk
 from common.expected import expected_counts
 
 REPO = Path(__file__).resolve().parent
+BLANK = {"load_s": 0.0, "constraints_s": 0.0, "total_s": 0.0, "rows_per_s": 0,
+         "artists": 0, "albums": 0, "tracks": 0, "playlists": 0, "playlist_tracks": 0}
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 LOADERS_DIR = REPO / "loaders"
 RESULTS_CSV = REPO / "results" / "results.csv"
 
@@ -55,20 +62,35 @@ def validate(actual: dict[str, int], expected: dict[str, int]) -> list[str]:
 
 
 def benchmark(name: str, n_slices: int | None, expected: dict[str, int]) -> dict:
+    """Run one loader end to end. Never raises: a broken loader is recorded as a
+    failed row so an unattended sweep keeps going instead of aborting."""
     print(f"\n=== {name}  ({n_slices or 'all'} slices) ===")
 
     with db.connect() as conn:
         db.reset_schema(conn)
 
-    t_load = run_loader(name, n_slices)
+    try:
+        t_load = run_loader(name, n_slices)
+    except subprocess.CalledProcessError as e:
+        print(f"  LOAD FAILED: exit {e.returncode}")
+        return {**BLANK, "run_at": now(), "loader": name,
+                "slices": n_slices or 1000, "status": "LOAD_FAILED"}
     print(f"  load:        {t_load:8.1f}s")
 
-    with db.connect() as conn:
-        t0 = time.perf_counter()
-        db.add_constraints(conn)
-        t_constraints = time.perf_counter() - t0
-        print(f"  constraints: {t_constraints:8.1f}s")
-        counts = db.row_counts(conn)
+    t_constraints = 0.0
+    try:
+        with db.connect() as conn:
+            t0 = time.perf_counter()
+            db.add_constraints(conn)
+            t_constraints = time.perf_counter() - t0
+            print(f"  constraints: {t_constraints:8.1f}s")
+            counts = db.row_counts(conn)
+    except psycopg.Error as e:
+        # A constraint violation here means the loader produced inconsistent data --
+        # exactly what this phase exists to catch. Record it and move on.
+        print(f"  CONSTRAINTS FAILED: {str(e).splitlines()[0]}")
+        return {**BLANK, "run_at": now(), "loader": name, "slices": n_slices or 1000,
+                "load_s": round(t_load, 1), "status": "CONSTRAINTS_FAILED"}
 
     problems = validate(counts, expected)
     status = "OK" if not problems else "MISMATCH"
@@ -77,7 +99,7 @@ def benchmark(name: str, n_slices: int | None, expected: dict[str, int]) -> dict
         print(f"    ! {p}")
 
     return {
-        "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "run_at": now(),
         "loader": name,
         "slices": n_slices or 1000,
         "load_s": round(t_load, 1),
@@ -89,11 +111,19 @@ def benchmark(name: str, n_slices: int | None, expected: dict[str, int]) -> dict
     }
 
 
+# Fixed column order. Rows from the success and failure paths are built differently,
+# and DictWriter writes values in fieldnames order -- taking it from row.keys() would
+# silently shift every column the first time a failure row was appended.
+FIELDS = ["run_at", "loader", "slices", "load_s", "constraints_s", "total_s",
+          "rows_per_s", "status", "artists", "albums", "tracks", "playlists",
+          "playlist_tracks", "rep"]
+
+
 def append_result(row: dict) -> None:
     RESULTS_CSV.parent.mkdir(exist_ok=True)
     new_file = not RESULTS_CSV.exists()
     with RESULTS_CSV.open("a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=row.keys())
+        w = csv.DictWriter(f, fieldnames=FIELDS)
         if new_file:
             w.writeheader()
         w.writerow(row)
