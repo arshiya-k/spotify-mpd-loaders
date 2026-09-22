@@ -2,8 +2,15 @@
 
 This process does no loading. It could exit right after apply_async() and the
 workers would still drain the queue -- we only block so the harness can time it.
+
+Work is enqueued in chunks, with a staging merge between chunks, for the same
+reason loader 04 does it: staging absorbs every duplicate dimension row, so
+loading all 1000 slices before collapsing would put ~8 GB of soon-to-be-discarded
+rows on disk. Chunking bounds that to one chunk's worth regardless of input size.
 """
+import os
 import time
+from itertools import islice
 
 from celery import group
 
@@ -20,19 +27,30 @@ _spec.loader.exec_module(celery_app)
 load_slice = celery_app.load_slice
 
 
+CHUNK = int(os.environ.get("MPD_CHUNK") or 100)      # slices per staging merge
+
+
+def chunks(seq, size):
+    it = iter(seq)
+    while batch := list(islice(it, size)):
+        yield batch
+
+
 def main() -> None:
     files = slices_from_env()
     with db.connect() as conn:
         db.create_staging(conn)
 
-    t0 = time.perf_counter()
-    job = group(load_slice.s(str(f)) for f in files)
-    result = job.apply_async()
-    print(f"  enqueued {len(files)} tasks in {time.perf_counter() - t0:.2f}s")
-
-    counts = result.get(disable_sync_subtasks=False)     # blocks until every task has a result
-    t_parallel = time.perf_counter() - t0
-    print(f"  {len(counts)} tasks done, {sum(counts):,} entries, {t_parallel:.1f}s")
+    total = 0
+    t_start = time.perf_counter()
+    with db.connect() as conn:
+        for batch in chunks(files, CHUNK):
+            job = group(load_slice.s(str(f)) for f in batch)
+            counts = job.apply_async().get(disable_sync_subtasks=False)
+            total += sum(counts)
+            db.merge_staging(conn)               # combine + truncate: staging stays small
+            print(f"  {total:,} entries loaded")
+    print(f"  {len(files)} tasks done, {total:,} entries, {time.perf_counter() - t_start:.1f}s")
 
     t0 = time.perf_counter()
     with db.connect() as conn:
