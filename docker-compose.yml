@@ -10,8 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Dataset mounted read-only so SQL-only loaders can pg_read_file() it.
-      - ${MPD_DATA_DIR}:/data:ro
     # Bulk-load tuning. Defaults are sized for a tiny VM; we have a laptop.
     command:
       - "postgres"

@@ -102,14 +102,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("loaders", nargs="+", help="loader directory names under loaders/")
     ap.add_argument("--slices", type=int, default=None, help="first N slice files (default: all 1000)")
+    ap.add_argument("--repeat", type=int, default=1, help="run each loader N times (report all runs)")
     args = ap.parse_args()
 
     print(f"computing expected counts for {args.slices or 'all'} slices...")
     expected = expected_counts(args.slices)
 
-    for name in args.loaders:
-        row = benchmark(name, args.slices, expected)
-        append_result(row)
+    for rep in range(args.repeat):
+        for name in args.loaders:
+            row = benchmark(name, args.slices, expected)
+            row["rep"] = rep + 1
+            append_result(row)
 
     print(f"\nresults appended to {RESULTS_CSV.relative_to(REPO)}")
 
