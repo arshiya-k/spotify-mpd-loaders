@@ -38,13 +38,18 @@ def main(slices: int = 100) -> None:
     fig, ax = plt.subplots(figsize=(9, 4.5))
     ax.barh(y, l, color="#378ADD", label="load")
     ax.barh(y, c, left=l, color="#B5D4F4", label="constraints + indexes")
+    span = max(a + b for a, b in zip(l, c))
     for i, (a, b) in enumerate(zip(l, c)):
-        ax.text(a + b + 3, i, f"{a:.0f}s", va="center", fontsize=9, color="#444")
+        ax.text(a + b + span * 0.015, i, f"{a + b:.0f}s total", va="center",
+                fontsize=9, color="#444")
+    ax.set_xlim(0, span * 1.18)          # room for the labels
 
     ax.set_yticks(list(y), [LABELS.get(n, n) for n in names], fontsize=9)
     ax.set_xlabel("seconds (median of 3 runs)")
-    ax.set_title(f"Loading {slices} slices ({slices * 1000:,} playlists) into Postgres", fontsize=11)
-    ax.legend(frameon=False, fontsize=9, loc="lower right")
+    entries = {100: "6.7M", 1000: "66.3M"}.get(slices, "")
+    ax.set_title(f"Loading {slices:,} slices -- {slices * 1000:,} playlists, "
+                 f"{entries} track entries -- into Postgres", fontsize=11)
+    ax.legend(frameon=False, fontsize=9, loc="upper right")
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.grid(axis="x", alpha=0.25)

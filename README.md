@@ -102,9 +102,41 @@ them once, at the end, with a single parallel hash aggregate.
 
 ## Results
 
-<!-- RESULTS_100 -->
+### 100 slices (100,000 playlists, 6.7M track entries)
 
-<!-- RESULTS_1000 -->
+![benchmark at 100 slices](results/benchmark_100.png)
+
+| loader | load (s) | constraints (s) | total (s) | rows/s | runs |
+|---|---:|---:|---:|---:|---:|
+| Multiprocessing | 13.7 | 31.0 | 44.7 | 487,431 | 3 |
+| Celery | 17.4 | 29.0 | 46.4 | 383,782 | 3 |
+| Python, COPY | 22.9 | 28.4 | 51.3 | 291,607 | 3 |
+| Spark | 44.1 | 32.6 | 76.7 | 151,424 | 3 |
+| Airflow | 61.2 | 37.8 | 99.0 | 109,114 | 3 |
+| Straight SQL | 67.1 | 29.7 | 96.8 | 99,520 | 3 |
+| Python, executemany | 166.6 | 24.0 | 190.6 | 40,083 | 3 |
+
+Median of 3 runs, all seven loaders, one session, on a MacBook Air (8 cores, 16 GB).
+
+### Full dataset (1,000,000 playlists, 66,346,428 track entries)
+
+| loader | load (s) | constraints (s) | total (s) | rows/s | runs |
+|---|---:|---:|---:|---:|---:|
+| Multiprocessing | 137.4 | 289.2 | 426.6 | 482,871 | 1 |
+| Celery | 156.1 | 294.1 | 450.2 | 425,025 | 1 |
+| Python, COPY | 235.5 | 270.0 | 505.5 | 281,726 | 1 |
+
+Single run of the three fastest. The interesting number is not the total but the
+**scaling**: multiprocessing went from 13.7 s at 100 slices to 137.4 s at 1,000 --
+exactly linear, 487K to 483K rows/sec. Chunked staging is what keeps it that way;
+without it, staging would have grown to ~8 GB and the final dedup would have had to
+read all 66M duplicate rows instead of ~7M pre-combined ones.
+
+The constraints phase scaled at 9.3x for 10x the rows, which is better than the
+n log n an index build implies -- `maintenance_work_mem` was large enough to keep
+most of the sorting in memory.
+
+Final database: **7.5 GB**, 66,346,428 fact rows, 2,262,292 tracks.
 
 ## What each loader taught
 
@@ -148,17 +180,34 @@ Python: of 0.39 s/slice, 0.23 s was `json.loads` plus the flattening loop and on
 
 ### 04 — Multiprocessing
 
-CPU-bound Python work does not parallelize with threads — the GIL lets only one thread
-execute bytecode at a time. Processes get real cores, at the cost of sharing nothing:
-each worker has its own `seen` set, so loader 03's dedup strategy is dead. Workers
-append to unconstrained staging tables instead and never coordinate; the parent
-collapses duplicates once with `GROUP BY`.
+CPU-bound Python work does not parallelize with threads -- the GIL lets only one
+thread execute bytecode at a time. Processes get real cores, at the cost of sharing
+nothing: each worker has its own `seen` set, so loader 03's dedup strategy is dead.
+Workers append to unconstrained staging tables instead and never coordinate.
 
-The other finding was infrastructural. The first runs showed no speedup beyond 4
-workers — the ceiling turned out to be Docker Desktop's VM on macOS, which funnels all
-container traffic through a virtualized network stack. Moving Postgres to a native
-Homebrew install (see `pg.sh`) restored linear scaling. **Measure your infrastructure
-before blaming your code.**
+**Bounding the working set.** Staging absorbs every duplicate, so loading all 1,000
+slices before collapsing would put ~8 GB of soon-to-be-discarded rows on disk. The
+loader processes slices in chunks and merges after each one, which makes peak disk
+independent of dataset size.
+
+The first version of that merge deduped straight into the real dimension tables,
+which required their primary keys to exist during load so `ON CONFLICT` could detect
+conflicts. It was **2.7x slower overall** (50.7 s vs 18.6 s) -- the merge alone went
+from 1.6 s to 9.0 s on identical data, because per-row index maintenance replaced one
+bulk index build.
+
+The fix was **two-level aggregation**: each chunk is collapsed into unindexed
+`*_merged` tables, and cross-chunk duplicates are left for a single final pass. Same
+idea as a MapReduce combiner, or Spark's `Partial HashAggregate` before a shuffle --
+reduce locally so the expensive global step reads less. The result was faster than the
+original unchunked version (13.7 s) *and* bounded in disk, because the final dedup now
+reads ~7M pre-combined rows instead of 66M raw ones.
+
+**The infrastructure finding.** Early runs showed no speedup beyond 4 workers. The
+ceiling turned out to be Docker Desktop's VM on macOS, which funnels all container
+traffic through a virtualized network stack. Moving Postgres to a native Homebrew
+install (see `pg.sh`) restored linear scaling. Measure your infrastructure before
+blaming your code.
 
 ### 05 — Celery
 
@@ -236,6 +285,16 @@ statement about the tools.
   Airflow figure as an order of magnitude, not a measurement.
 - **Loader 02 is deliberately naive.** It exists as a baseline, not as a
   recommendation.
+- **Precision is not accuracy.** An earlier sweep had 3 reps per loader agreeing to
+  within 2%, and was still wrong: each loader's reps ran in one session, so a
+  session-level change shifted all three together and showed up as tight variance
+  rather than as error. Re-running an *unmodified* loader later gave 23.3 s where it
+  had measured 32.5 s -- the machine was ~30% faster once the disk dropped below 96%
+  full. The tell was the constraints-phase control diverging between loaders, not the
+  variance. Everything in the table above was therefore re-measured in a single
+  session, with reps interleaved round-robin so any remaining drift spreads across all
+  loaders instead of landing on one. The discarded numbers are kept in
+  `results/results_mixed_conditions.csv`.
 
 ## Setup
 
@@ -294,3 +353,18 @@ Each loader directory contains a `run.sh`. That is the entire interface the harn
 knows about: three environment variables in (`DATABASE_URL`, `MPD_DATA_DIR`,
 `MPD_SLICES`), an exit code out. It's what lets `psql`, `spark-submit`, a Celery
 producer, and an Airflow API call all be "a loader" without the harness caring.
+
+## Known limitations
+
+- **Loader 06 (Airflow) does not chunk its staging.** The DAG maps one task per slice
+  and finalizes once, so staging grows with the input and the full 1,000-slice dataset
+  would not fit on the machine this was built on. Fixing it means restructuring the DAG
+  into sequential chunk groups. Loaders 04 and 05 do chunk, and run at full scale.
+- **Loader 01 (straight SQL) cannot run at full scale either**, for a larger reason:
+  it materializes every slice as `jsonb` in one table before exploding it, which would
+  be ~34 GB before any rows are written.
+- **Full-dataset figures are single runs.** The 100-slice table is the one with
+  repetitions behind it.
+- **`benchmark.py` trusts the dataset's published counts** for full-dataset validation
+  and recomputes them by scanning the JSON for partial runs (a few seconds per 100
+  slices).
