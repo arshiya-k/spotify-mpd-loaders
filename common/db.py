@@ -38,3 +38,12 @@ def create_staging(conn: psycopg.Connection) -> None:
 def finalize_staging(conn: psycopg.Connection) -> None:
     """Collapse *_staging into dimension tables."""
     run_sql_file(conn, "finalize_staging.sql")
+
+
+def merge_staging(conn: psycopg.Connection) -> None:
+    """Collapse one chunk of raw staging into the merged tables, then truncate staging.
+
+    Keeps the working set bounded: raw staging never exceeds one chunk, so peak disk
+    is independent of how many slices there are in total.
+    """
+    run_sql_file(conn, "merge_staging.sql")

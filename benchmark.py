@@ -21,6 +21,7 @@ from pathlib import Path
 
 from common import db
 from common.config import DATA_DIR, DATABASE_URL
+from common.diskguard import check as check_disk
 from common.expected import expected_counts
 
 REPO = Path(__file__).resolve().parent
@@ -104,6 +105,8 @@ def main() -> None:
     ap.add_argument("--slices", type=int, default=None, help="first N slice files (default: all 1000)")
     ap.add_argument("--repeat", type=int, default=1, help="run each loader N times (report all runs)")
     args = ap.parse_args()
+
+    check_disk(args.slices or 1000, DATA_DIR)
 
     print(f"computing expected counts for {args.slices or 'all'} slices...")
     expected = expected_counts(args.slices)

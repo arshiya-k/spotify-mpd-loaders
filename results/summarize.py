@@ -17,12 +17,17 @@ LABELS = {
 
 
 def load(slices: int) -> dict[str, list[dict]]:
+    """Latest 3 OK runs per loader at this slice count.
+
+    Taking the tail matters: a loader re-benchmarked after a code change leaves its
+    older rows in the file, and mixing them would average two different implementations.
+    """
     rows = defaultdict(list)
     with (HERE / "results.csv").open() as f:
         for r in csv.DictReader(f):
             if int(r["slices"]) == slices and r["status"] == "OK":
                 rows[r["loader"]].append(r)
-    return rows
+    return {k: v[-3:] for k, v in rows.items()}
 
 
 def table(slices: int) -> str:

@@ -4,6 +4,11 @@
 #
 #   ./run_benchmarks.sh 100 3      # 100 slices, 3 repetitions
 set -euo pipefail
+
+# The Airflow compose file interpolates ${MPD_DATA_DIR}; without it even `stop` fails
+# with "invalid spec: :/data:ro", leaving containers running and skewing later groups.
+set -a; . ./.env; set +a
+
 SLICES="${1:-100}"
 REPEAT="${2:-3}"
 PY=.venv/bin/python

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 results/*.csv
+!results/results.csv
 .DS_Store
 *.egg-info/
 jars/

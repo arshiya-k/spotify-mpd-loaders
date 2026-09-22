@@ -78,7 +78,9 @@ over the whole table. Same for indexes: a bulk build is one sort, not 66M increm
 B-tree insertions.
 
 Phase 3 is also a **control**: every loader produces identical tables, so its duration
-should be identical too. When it isn't, a loader left duplicates behind.
+should be identical too. It is -- 41-44 s for every loader except 02, which comes in at
+35 s because it already built the three dimension primary keys during its load. The
+control isolates a real structural difference rather than noise.
 
 ## The seven loaders
 
@@ -226,8 +228,12 @@ statement about the tools.
   loader, is the constraint. Loaders 04–07 are measuring the same ceiling.
 - **Docker on macOS taxes network I/O.** Loaders 05 and 06 run services in containers;
   loader 06's workers are containerized too. Part of their cost is the VM, not the tool.
-- **Laptop variance is real.** Every figure is the median of 3 runs; individual runs
-  varied by up to 40% depending on background activity and thermal state.
+- **Every figure is the median of 3 runs**, and the spread differs sharply by loader.
+  The five that need no external services agreed to within ~2% across repetitions.
+  Celery varied ~13%. Airflow varied ~57% (159.6 / 130.2 / 101.4 s), getting faster
+  each repetition as containers and caches warmed -- its timing depends on scheduler
+  poll intervals and on five containers competing for the same laptop. Treat the
+  Airflow figure as an order of magnitude, not a measurement.
 - **Loader 02 is deliberately naive.** It exists as a baseline, not as a
   recommendation.
 
